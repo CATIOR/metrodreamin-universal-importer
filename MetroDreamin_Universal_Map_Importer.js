@@ -2,7 +2,7 @@
 // @name         MetroDreamin' — Universal Map Importer (GeoJSON / KML / GPX)
 // @name:ru      MetroDreamin' — Универсальный импорт карт (GeoJSON / KML / GPX)
 // @namespace    https://metrodreamin.com/
-// @version      1.0
+// @version      3.0.2
 // @description  Import transit lines, stations, waypoints, and interchanges from GeoJSON, KML, or GPX files (Google My Maps, QGIS, uMap, OpenStreetMap, Yandex Maps, etc.) into MetroDreamin'.
 // @description:ru Импорт линий, станций, путевых точек (Waypoints) и пересадок из GeoJSON, KML или GPX (Google My Maps, QGIS, uMap, OpenStreetMap, Яндекс Карты и др.) в MetroDreamin'.
 // @author       Community Contributors
@@ -18,7 +18,7 @@
     const pageWin = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     const AUTO_IMPORT_KEY = '__MD_UNIVERSAL_AUTO_LIVE_IMPORT__';
     const LANG_STORAGE_KEY = '__MD_IMPORTER_LANG__';
-    const SCRIPT_VERSION = '3.0.1';
+    const SCRIPT_VERSION = '3.0.2';
 
     // =========================================================================
     // PART 0. LOCALIZATION (EN default + optional RU)
@@ -435,6 +435,81 @@
         return 'RAPID';
     }
 
+    // Greedily stitches MultiLineString segments whose endpoints meet within maxGapM
+    function stitchLineSegments(segments, maxGapM = 120) {
+        const remaining = segments
+            .filter(s => Array.isArray(s) && s.length >= 2)
+            .map(s => s.slice());
+        if (remaining.length <= 1) return remaining;
+
+        const chains = [];
+        while (remaining.length > 0) {
+            let chain = remaining.shift();
+            let merged = true;
+            while (merged && remaining.length > 0) {
+                merged = false;
+                const head = chain[0];
+                const tail = chain[chain.length - 1];
+                let bestIdx = -1;
+                let bestDist = maxGapM;
+                let mode = '';
+
+                for (let i = 0; i < remaining.length; i++) {
+                    const seg = remaining[i];
+                    const sHead = seg[0];
+                    const sTail = seg[seg.length - 1];
+
+                    const dTailHead = haversineM(tail[0], tail[1], sHead[0], sHead[1]);
+                    if (dTailHead <= bestDist) { bestDist = dTailHead; bestIdx = i; mode = 'append'; }
+
+                    const dTailTail = haversineM(tail[0], tail[1], sTail[0], sTail[1]);
+                    if (dTailTail <= bestDist) { bestDist = dTailTail; bestIdx = i; mode = 'append_rev'; }
+
+                    const dHeadTail = haversineM(head[0], head[1], sTail[0], sTail[1]);
+                    if (dHeadTail <= bestDist) { bestDist = dHeadTail; bestIdx = i; mode = 'prepend'; }
+
+                    const dHeadHead = haversineM(head[0], head[1], sHead[0], sHead[1]);
+                    if (dHeadHead <= bestDist) { bestDist = dHeadHead; bestIdx = i; mode = 'prepend_rev'; }
+                }
+
+                if (bestIdx !== -1) {
+                    const chosen = remaining.splice(bestIdx, 1)[0];
+                    if (mode === 'append') {
+                        chain = chain.concat(bestDist < 1 ? chosen.slice(1) : chosen);
+                    } else if (mode === 'append_rev') {
+                        const rev = chosen.slice().reverse();
+                        chain = chain.concat(bestDist < 1 ? rev.slice(1) : rev);
+                    } else if (mode === 'prepend') {
+                        chain = (bestDist < 1 ? chosen.slice(0, -1) : chosen).concat(chain);
+                    } else if (mode === 'prepend_rev') {
+                        const rev = chosen.slice().reverse();
+                        chain = (bestDist < 1 ? rev.slice(0, -1) : rev).concat(chain);
+                    }
+                    merged = true;
+                }
+            }
+            chains.push(chain);
+        }
+
+        // Drop tiny disconnected spurs (< 150m) if the MultiLineString already has a main line (> 500m)
+        if (chains.length > 1) {
+            const chainLen = (pts) => {
+                let total = 0;
+                for (let i = 1; i < pts.length; i++) {
+                    total += haversineM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+                }
+                return total;
+            };
+            const lengths = chains.map(chainLen);
+            const maxLen = Math.max(...lengths);
+            if (maxLen > 500) {
+                const filtered = chains.filter((_, i) => lengths[i] >= 150);
+                if (filtered.length > 0) return filtered;
+            }
+        }
+        return chains;
+    }
+
     function parseGeoJSON(text) {
         let geo;
         try {
@@ -445,6 +520,49 @@
         const rawPoints = [];
         const rawLines = [];
         const mapTitle = cleanText(geo?.metadata?.name || geo?.name || geo?.title || '');
+
+        // Detect OSM/Overpass exports that include both route relations and raw member ways/nodes
+        const topFeatures = (geo.type === 'FeatureCollection' && Array.isArray(geo.features)) ? geo.features : [];
+        const hasOsmRouteRelations = topFeatures.some(f => {
+            const p = f?.properties || {};
+            const osmId = String(p['@id'] || f?.id || '');
+            return osmId.startsWith('relation/') || p.type === 'route';
+        });
+
+        function isIgnorableOsmFeature(feat, geomType) {
+            const p = feat?.properties || {};
+            const osmId = String(p['@id'] || feat?.id || '');
+            if (!osmId && !p['@relations']) return false;
+
+            // Skip raw member track ways when route relations are already present in the file
+            if (hasOsmRouteRelations && (geomType === 'LineString' || geomType === 'MultiLineString')) {
+                if (osmId.startsWith('way/') && !p.route) {
+                    return true;
+                }
+                if (Array.isArray(p['@relations']) && p['@relations'].length > 0 && !osmId.startsWith('relation/') && !p.route) {
+                    return true;
+                }
+            }
+
+            // Skip non-station railway/road infrastructure nodes (switches, signals, crossings)
+            if (geomType === 'Point' || geomType === 'MultiPoint') {
+                const nonStopRail = ['switch', 'buffer_stop', 'crossing', 'level_crossing', 'signal', 'milestone', 'derail'];
+                const nonStopHwy = ['crossing', 'traffic_signals', 'turning_circle', 'street_lamp'];
+                if (nonStopRail.includes(p.railway) || nonStopHwy.includes(p.highway)) {
+                    return true;
+                }
+                const hasStopTag =
+                    ['station', 'halt', 'tram_stop', 'subway_entrance'].includes(p.railway) ||
+                    ['station', 'stop_position', 'platform'].includes(p.public_transport) ||
+                    p.highway === 'bus_stop' ||
+                    Boolean(p.name);
+                if (osmId.startsWith('node/') && !hasStopTag) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         function extractGeometry(geom, props) {
             if (!geom || !geom.type) return;
@@ -515,21 +633,25 @@
                     });
                 }
             } else if (geom.type === 'MultiLineString' && Array.isArray(geom.coordinates)) {
-                geom.coordinates.forEach((lineCoords, idx) => {
-                    if (!Array.isArray(lineCoords)) return;
-                    const coords = lineCoords
-                        .filter(c => Array.isArray(c) && c.length >= 2)
-                        .map(c => [Number(c[1]), Number(c[0])])
-                        .filter(([lat, lng]) => isValidLatLng(lat, lng));
-                    if (coords.length >= 2) {
-                        const suffix = geom.coordinates.length > 1 ? ` (${idx + 1})` : '';
-                        rawLines.push({
-                            name: (name || t('defaultLineN', rawLines.length + 1)) + suffix,
-                            color: normalizeGeoColor(rawColor, rawLines.length),
-                            modeHint,
-                            coords
-                        });
-                    }
+                const rawSegments = geom.coordinates
+                    .filter(lineCoords => Array.isArray(lineCoords))
+                    .map(lineCoords =>
+                        lineCoords
+                            .filter(c => Array.isArray(c) && c.length >= 2)
+                            .map(c => [Number(c[1]), Number(c[0])])
+                            .filter(([lat, lng]) => isValidLatLng(lat, lng))
+                    )
+                    .filter(coords => coords.length >= 2);
+
+                const stitchedChains = stitchLineSegments(rawSegments, 120);
+                stitchedChains.forEach((coords, idx) => {
+                    const suffix = stitchedChains.length > 1 ? ` (${idx + 1})` : '';
+                    rawLines.push({
+                        name: (name || t('defaultLineN', rawLines.length + 1)) + suffix,
+                        color: normalizeGeoColor(rawColor, rawLines.length),
+                        modeHint,
+                        coords
+                    });
                 });
             } else if (geom.type === 'GeometryCollection' && Array.isArray(geom.geometries)) {
                 geom.geometries.forEach(subGeom => extractGeometry(subGeom, props));
@@ -539,6 +661,7 @@
         function processFeature(feat) {
             if (!feat) return;
             if (feat.type === 'Feature') {
+                if (feat.geometry && isIgnorableOsmFeature(feat, feat.geometry.type)) return;
                 extractGeometry(feat.geometry, feat.properties || {});
             } else if (feat.type === 'FeatureCollection' && Array.isArray(feat.features)) {
                 feat.features.forEach(processFeature);

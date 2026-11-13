@@ -37,8 +37,8 @@ Works with exports from **Google My Maps**, **QGIS**, **uMap**, **OpenStreetMap 
    - **Chrome / Edge / Brave:** [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)
    - **Firefox:** [Violentmonkey](https://violentmonkey.github.io/) or [Tampermonkey](https://www.tampermonkey.net/)
 2. Install the script:
-   - From **Greasy Fork**: `<YOUR_GREASYFORK_URL>`
-   - Or directly from GitHub Raw: `https://raw.githubusercontent.com/<YOUR_USERNAME>/<YOUR_REPO>/main/metrodreamin-universal-importer.user.js`
+   - From **Greasy Fork**: [Install on Greasy Fork](https://greasyfork.org/scripts/605209-metrodreamin-universal-map-importer-geojson-kml-gpx)
+   - Or directly from **GitHub Raw**: [Install from GitHub Raw](https://raw.githubusercontent.com/CATIOR/metrodreamin-universal-importer/main/metrodreamin-universal-importer.user.js)
 
 ---
 

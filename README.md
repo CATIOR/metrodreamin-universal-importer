@@ -1,7 +1,7 @@
 # MetroDreamin' — Universal Map Importer (GeoJSON / KML / GPX)
 
 > [!TIP]
-> Доступен [README.ru.md](README) на русском языке.
+> Доступен [README.ru.md](README.ru.md) на русском языке.
 
 A browser userscript for [MetroDreamin'](https://metrodreamin.com/) that imports transit lines, stations, curve waypoints, and pedestrian interchanges directly from **GeoJSON**, **KML**, and **GPX** files into the MetroDreamin' editor.
 

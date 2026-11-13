@@ -14,7 +14,7 @@
 ## Возможности
 
 - **Парсинг разных форматов:**
-  - **GeoJSON (`.geojson`, `.json`)**: `Point`, `MultiPoint`, `LineString`, `MultiLineString`, `GeometryCollection` (рекурсивно), «голые» геометрии (без `Feature`), теги `simplestyle-spec`, uMap (`_umap_options`) и OSM (`colour`, `route`, `railway`).
+  - **GeoJSON (`.geojson`, `.json`)**: `Point`, `MultiPoint`, `LineString`, `MultiLineString` (с автоматической склейкой разрозненных сегментов OSM-маршрутов в цельные линии), `GeometryCollection` (рекурсивно), «голые» геометрии (без `Feature`), теги `simplestyle-spec`, uMap (`_umap_options`), а также фильтрация сырых сегментов путей (`way/`) и служебных узлов (стрелок, переездов, светофоров) при импорте маршрутов (`relation`) из OSM/Overpass.
   - **KML (`.kml`)**: `Placemark`, `Point`, `LineString`, `MultiGeometry`, Google Earth `<gx:Track>`, `Style` / `StyleMap` (`AABBGGRR` → `#RRGGBB`) и `ExtendedData`.
   - **GPX (`.gpx`)**: путевые точки (`<wpt>`), треки (`<trk>` / `<trkseg>`), маршруты (`<rte>`) и цвета из расширений Garmin.
 - **Умный построитель геометрии:**
@@ -22,6 +22,7 @@
   - Заменяет близлежащие вершины линий (`Vertex (m)`) на именованные станции, а промежуточные точки изгибов сохраняет как **Waypoints** в MetroDreamin'.
   - Устраняет дублирующиеся/совпадающие станции (`Merge (m)`), обрезает короткие «хвосты» линий за конечными станциями и определяет кольцевые маршруты.
   - Автоматически создаёт **пересадки (Interchanges)** между разными линиями в радиусе `Interchange (m)` — включая связывание новых импортированных линий с уже существующими станциями в режиме **Append**.
+  - Опционально пропускает обратные дубли маршрутов из OSM (`А => Б` / `Б => А`) для более компактного отображения коридоров.
 - **Автоопределение типа транспорта:** распознаёт `RAPID`, `TRAM`, `LIGHT`, `BRT`, `BUS`, `COMMUTER`, `GONDOLA` и `FERRY` по свойствам OSM/ГИС или названиям линий на разных языках.
 - **Два режима импорта:**
   - **Replace:** заменяет текущую карту (очищает устаревшие `lineGroups`).
@@ -37,8 +38,8 @@
    - **Chrome / Edge / Brave:** [Tampermonkey](https://www.tampermonkey.net/) или [Violentmonkey](https://violentmonkey.github.io/)
    - **Firefox:** [Violentmonkey](https://violentmonkey.github.io/) или [Tampermonkey](https://www.tampermonkey.net/)
 2. Установите скрипт:
-   - С **Greasy Fork**: `<YOUR_GREASYFORK_URL>`
-   - Или напрямую из GitHub Raw: `https://raw.githubusercontent.com/<YOUR_USERNAME>/<YOUR_REPO>/main/metrodreamin-universal-importer.user.js`
+   - С **Greasy Fork**: [Установить с Greasy Fork](https://greasyfork.org/ru/scripts/605209-metrodreamin-universal-map-importer-geojson-kml-gpx)
+   - Или напрямую из **GitHub Raw**: [Установить с GitHub Raw](https://raw.githubusercontent.com/CATIOR/metrodreamin-universal-importer/main/metrodreamin-universal-importer.user.js)
 
 ---
 
@@ -47,14 +48,14 @@
 1. Откройте редактор MetroDreamin' (`/edit/new` или любую существующую карту по адресу `/edit/...`).
 2. Нажмите **`📥 Import Map`** в верхней правой части шапки.
 3. Выберите файл `.geojson`, `.json`, `.kml` или `.gpx`.
-4. При необходимости настройте параметры (тип транспорта, обработка вершин, радиусы привязки/слияния/пересадок, режим Replace или Append).
+4. При необходимости настройте параметры (тип транспорта, обработка вершин, радиусы привязки/слияния/пересадок, режим Replace или Append, пропуск обратных дублей OSM).
 5. Нажмите **`⚡ Live Import (React)`** (или **`🔄 Reload & Import`**, если редактор ещё не завершил инициализацию новой сессии).
 6. Закройте окно и нажмите значок **сохранения (дискета)** в MetroDreamin', чтобы сохранить карту.
 
 ### Устранение неполадок
 
 - **Ошибка сохранения на `/edit/new` (конфликт слота):** нажмите **`+1 slot`** в модальном окне, чтобы увеличить `systemNumStr`, и попробуйте сохранить снова (скрипт также автоматически увеличивает номер при обнаружении коллизии).
-- **Большие файлы / пустая карта:** попробуйте **`🔄 Reload & Import`**, либо выгрузите сгенерированную схему через **`💾 Export JSON`** / **`🐞 Debug Log`** и откройте Issue.
+- **Большие файлы / пустая карта:** попробуйте **`🔄 Reload & Import`**, либо выгрузите сгенерированную схему через **`💾 Export JSON`** / **`🐞 Debug Log`** и откройте [Issue](https://github.com/CATIOR/metrodreamin-universal-importer/issues).
 
 ---
 

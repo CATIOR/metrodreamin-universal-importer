@@ -2,7 +2,7 @@
 // @name         MetroDreamin' — Universal Map Importer (GeoJSON / KML / GPX)
 // @name:ru      MetroDreamin' — Универсальный импорт карт (GeoJSON / KML / GPX)
 // @namespace    https://metrodreamin.com/
-// @version      3.0.2
+// @version      3.0.3
 // @description  Import transit lines, stations, waypoints, and interchanges from GeoJSON, KML, or GPX files (Google My Maps, QGIS, uMap, OpenStreetMap, Yandex Maps, etc.) into MetroDreamin'.
 // @description:ru Импорт линий, станций, путевых точек (Waypoints) и пересадок из GeoJSON, KML или GPX (Google My Maps, QGIS, uMap, OpenStreetMap, Яндекс Карты и др.) в MetroDreamin'.
 // @author       Community Contributors
@@ -18,7 +18,7 @@
     const pageWin = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     const AUTO_IMPORT_KEY = '__MD_UNIVERSAL_AUTO_LIVE_IMPORT__';
     const LANG_STORAGE_KEY = '__MD_IMPORTER_LANG__';
-    const SCRIPT_VERSION = '3.0.2';
+    const SCRIPT_VERSION = '3.0.3';
 
     // =========================================================================
     // PART 0. LOCALIZATION (EN default + optional RU)
@@ -58,6 +58,7 @@
             mergeModeLabel: 'Import Behavior:',
             mergeReplace: 'Replace current lines and stations',
             mergeAppend: 'Append to existing map',
+            dedupReverseLabel: 'Skip reverse route duplicates (OSM A => B / B => A)',
             btnDebug: '🐞 Debug Log',
             btnDebugTitle: 'Download internal diagnostics log (JSON)',
             btnJson: '💾 Export JSON',
@@ -77,6 +78,7 @@
                 `• Waypoints: ${waypoints}\n` +
                 `• Interchanges: ${interchanges}\n` +
                 `• Filtered unattached points: ${orphans}`,
+            statusReverseSkipped: (count) => `• Skipped reverse duplicate routes: ${count}`,
             statusLiveDone: (count, hooks, slot) =>
                 `✅ Live Import complete (v${SCRIPT_VERSION})!\n` +
                 `• React states updated: ${count} (${hooks.join(', ')})\n` +
@@ -129,6 +131,7 @@
             mergeModeLabel: 'Режим добавления:',
             mergeReplace: 'Заменить текущие линии и станции',
             mergeAppend: 'Добавить к существующим на карте',
+            dedupReverseLabel: 'Пропускать обратные дубли маршрутов (OSM А => Б / Б => А)',
             btnDebug: '🐞 Лог отладки',
             btnDebugTitle: 'Скачать внутренний журнал отладки (JSON)',
             btnJson: '💾 JSON схемы',
@@ -148,6 +151,7 @@
                 `• Путевых точек (Waypoints): ${waypoints}\n` +
                 `• Пешеходных пересадок (Interchanges): ${interchanges}\n` +
                 `• Отсеяно непривязанных точек: ${orphans}`,
+            statusReverseSkipped: (count) => `• Пропущено обратных дублей маршрутов: ${count}`,
             statusLiveDone: (count, hooks, slot) =>
                 `✅ Live-импорт выполнен (v${SCRIPT_VERSION})!\n` +
                 `• Обновлено стейтов React: ${count} (${hooks.join(', ')})\n` +
@@ -510,6 +514,94 @@
         return chains;
     }
 
+    function lineLengthM(coords) {
+        let total = 0;
+        for (let i = 1; i < coords.length; i++) {
+            total += haversineM(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+        }
+        return total;
+    }
+
+    function parseDirectionName(name) {
+        if (!name) return null;
+        const str = String(name).trim();
+        const colonIdx = str.indexOf(':');
+        const prefix = colonIdx > 0 ? str.slice(0, colonIdx).trim().toLowerCase() : '';
+        const body = colonIdx > 0 ? str.slice(colonIdx + 1).trim() : str;
+        const m = body.match(/^(.+?)\s*(?:=>|->|↔|—|–)\s*(.+)$/);
+        if (!m) return null;
+        return {
+            prefix,
+            from: m[1].trim().toLowerCase(),
+            to: m[2].trim().toLowerCase()
+        };
+    }
+
+    // Filters out reverse-direction copies of the same route (e.g. OSM "Tram 10: A => B" & "Tram 10: B => A")
+    function deduplicateReverseLines(rawLines) {
+        if (!Array.isArray(rawLines) || rawLines.length <= 1) {
+            return { lines: rawLines, skippedCount: 0 };
+        }
+        const kept = [];
+        const keptMeta = [];
+        let skippedCount = 0;
+
+        for (const line of rawLines) {
+            const coords = line.coords;
+            if (!coords || coords.length < 2) {
+                kept.push(line);
+                keptMeta.push(null);
+                continue;
+            }
+            const start = coords[0];
+            const end = coords[coords.length - 1];
+            const len = lineLengthM(coords);
+            const ref = (line.ref || '').trim().toLowerCase();
+            const dir = parseDirectionName(line.name);
+            const mode = detectTransitMode(line.name, line.modeHint, 'AUTO');
+
+            let isReverseDup = false;
+            for (let i = 0; i < kept.length; i++) {
+                const km = keptMeta[i];
+                if (!km) continue;
+                if (km.mode !== mode) continue;
+
+                const lenRatio = len > 0 && km.len > 0 ? len / km.len : 1;
+                if (lenRatio < 0.55 || lenRatio > 1.8) continue;
+
+                const swappedNames = Boolean(
+                    dir && km.dir &&
+                    dir.prefix === km.dir.prefix &&
+                    dir.from === km.dir.to &&
+                    dir.to === km.dir.from
+                );
+                const endpointsReversedRoughly =
+                    haversineM(start[0], start[1], km.end[0], km.end[1]) <= 1500 &&
+                    haversineM(end[0], end[1], km.start[0], km.start[1]) <= 1500;
+
+                const sameRefReversedEndpoints = Boolean(
+                    ref && km.ref && ref === km.ref &&
+                    haversineM(start[0], start[1], km.end[0], km.end[1]) <= 450 &&
+                    haversineM(end[0], end[1], km.start[0], km.start[1]) <= 450
+                );
+
+                if ((swappedNames && endpointsReversedRoughly) || sameRefReversedEndpoints) {
+                    isReverseDup = true;
+                    break;
+                }
+            }
+
+            if (isReverseDup) {
+                skippedCount++;
+            } else {
+                kept.push(line);
+                keptMeta.push({ start, end, len, ref, dir, mode });
+            }
+        }
+
+        return { lines: kept, skippedCount };
+    }
+
     function parseGeoJSON(text) {
         let geo;
         try {
@@ -592,6 +684,7 @@
             const modeHint = [props.mode, props.route, props.railway, props.transit_mode, props.type]
                 .filter(Boolean)
                 .join(' ');
+            const ref = cleanText(props.ref || '');
 
             if (geom.type === 'Point' && Array.isArray(geom.coordinates)) {
                 const lng = Number(geom.coordinates[0]);
@@ -629,6 +722,7 @@
                         name: name || t('defaultLineN', rawLines.length + 1),
                         color: normalizeGeoColor(rawColor, rawLines.length),
                         modeHint,
+                        ref,
                         coords
                     });
                 }
@@ -650,6 +744,7 @@
                         name: (name || t('defaultLineN', rawLines.length + 1)) + suffix,
                         color: normalizeGeoColor(rawColor, rawLines.length),
                         modeHint,
+                        ref,
                         coords
                     });
                 });
@@ -2125,7 +2220,7 @@
                     </div>
                 </div>
 
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom:14px;">
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom:12px;">
                     <div>
                         <label id="md-ui-orphans-label" style="display:block; font-size:11px; color:#999; margin-bottom:4px;"></label>
                         <select id="md-imp-orphans" style="width:100%; background:#2a2c33; color:#fff; padding:6px; border-radius:6px; border:1px solid #444;">
@@ -2142,13 +2237,18 @@
                     </div>
                 </div>
 
-                <div style="margin-bottom:14px;">
+                <div style="margin-bottom:10px;">
                     <label id="md-ui-mergemode-label" style="display:block; font-size:12px; color:#999; margin-bottom:4px;"></label>
                     <select id="md-imp-mergemode" style="width:100%; background:#2a2c33; color:#fff; padding:7px; border-radius:6px; border:1px solid #444;">
                         <option value="replace" data-i18n="mergeReplace"></option>
                         <option value="append" data-i18n="mergeAppend"></option>
                     </select>
                 </div>
+
+                <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#d1d5db; margin-bottom:14px; cursor:pointer; user-select:none;">
+                    <input type="checkbox" id="md-imp-dedup-reverse" style="width:15px; height:15px; accent-color:#3182ce; cursor:pointer; margin:0;" />
+                    <span id="md-ui-dedup-label"></span>
+                </label>
 
                 <div id="md-imp-status" style="background:#141519; color:#8dc572; padding:10px; border-radius:6px; font-size:12px; margin-bottom:14px; display:none; white-space:pre-wrap; max-height:135px; overflow-y:auto;"></div>
 
@@ -2192,6 +2292,7 @@
             bumpBtn.textContent = t('slotBumpBtn');
             bumpBtn.title = t('slotBumpTitle');
             backdrop.querySelector('#md-ui-mergemode-label').textContent = t('mergeModeLabel');
+            backdrop.querySelector('#md-ui-dedup-label').textContent = t('dedupReverseLabel');
 
             backdrop.querySelectorAll('[data-i18n]').forEach(el => {
                 el.textContent = t(el.getAttribute('data-i18n'));
@@ -2268,6 +2369,19 @@
                 rawLinesCount: parsed.rawLines.length
             });
 
+            const skipReverse = Boolean(backdrop.querySelector('#md-imp-dedup-reverse')?.checked);
+            let skippedReverseCount = 0;
+            let parsedForBuild = parsed;
+            if (skipReverse && parsed.rawLines.length > 1) {
+                const dedupRes = deduplicateReverseLines(parsed.rawLines);
+                skippedReverseCount = dedupRes.skippedCount;
+                parsedForBuild = {
+                    title: parsed.title,
+                    rawPoints: parsed.rawPoints,
+                    rawLines: dedupRes.lines
+                };
+            }
+
             let mergeMode = backdrop.querySelector('#md-imp-mergemode').value;
             const info = inspectMetroDreaminFiber();
 
@@ -2284,7 +2398,7 @@
             } : null;
 
             const systemPayload = buildMetroDreaminSystem(
-                parsed,
+                parsedForBuild,
                 {
                     snapRadiusM: readNonNegativeNumber(backdrop.querySelector('#md-imp-snap'), 80),
                     vertexReplaceM: readNonNegativeNumber(backdrop.querySelector('#md-imp-vreplace'), 40),
@@ -2307,7 +2421,11 @@
             const numLines = Object.keys(systemPayload.map.lines).length;
             const numInterchanges = Object.keys(systemPayload.map.interchanges || {}).length;
 
-            showStatus(t('statusParsed', numLines, realStations, waypoints, numInterchanges, systemPayload.removedOrphansCount));
+            let summary = t('statusParsed', numLines, realStations, waypoints, numInterchanges, systemPayload.removedOrphansCount);
+            if (skippedReverseCount > 0) {
+                summary += '\n' + t('statusReverseSkipped', skippedReverseCount);
+            }
+            showStatus(summary);
 
             return systemPayload;
         }
@@ -2316,7 +2434,8 @@
         const refreshPreviewIds = [
             '#md-imp-file', '#md-imp-mode', '#md-imp-vertex-mode',
             '#md-imp-snap', '#md-imp-vreplace', '#md-imp-merge',
-            '#md-imp-interchange', '#md-imp-orphans', '#md-imp-mergemode'
+            '#md-imp-interchange', '#md-imp-orphans', '#md-imp-mergemode',
+            '#md-imp-dedup-reverse'
         ];
         refreshPreviewIds.forEach(sel => {
             const el = backdrop.querySelector(sel);
